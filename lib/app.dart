@@ -4,6 +4,9 @@ import 'features/transactions/add_transaction_screen.dart';
 import 'widgets/github_info_dialog.dart';
 import 'theme.dart';
 import 'core/services/reload_bus.dart';
+import 'core/services/github_service.dart';
+import 'core/services/csv_service.dart';
+import 'user_config.dart';
 
 class ComptesApp extends StatefulWidget {
   const ComptesApp({super.key});
@@ -17,13 +20,18 @@ class _ComptesAppState extends State<ComptesApp> {
   int _reloadVersion = 0;
   late final VoidCallback _onReload;
 
-  // Variable pour stocker l'action de retour du Dashboard
   VoidCallback? _dashboardBackAction;
+  String? _lastUpdateDate;
 
   @override
   void initState() {
     super.initState();
-    _onReload = () => setState(() => _reloadVersion++);
+    _fetchLastUpdateDate();
+
+    _onReload = () {
+      setState(() => _reloadVersion++);
+      _fetchLastUpdateDate();
+    };
     TransactionsRefresher.instance.addListener(_onReload);
   }
 
@@ -31,6 +39,43 @@ class _ComptesAppState extends State<ComptesApp> {
   void dispose() {
     TransactionsRefresher.instance.removeListener(_onReload);
     super.dispose();
+  }
+
+  Future<void> _fetchLastUpdateDate() async {
+    try {
+      final gh = GithubService(UserConfig.GITHUB_TOKEN);
+      final path = GithubPath(
+        owner: UserConfig.GITHUB_OWNER,
+        repo: UserConfig.GITHUB_REPO,
+        branch: UserConfig.GITHUB_BRANCH,
+        path: UserConfig.LOGS_PATH,
+      );
+
+      final resp = await gh.fetchFile(path);
+      if (resp.content.isNotEmpty) {
+        final rows = CsvService().parseCsv(resp.content);
+        if (rows.length > 1 && rows[1].isNotEmpty) {
+          final rawDate = rows[1][0];
+          String formattedDate = rawDate;
+
+          if (rawDate.length >= 16) {
+            final month = rawDate.substring(5, 7);
+            final day   = rawDate.substring(8, 10);
+            final hour  = rawDate.substring(11, 13);
+            final min   = rawDate.substring(14, 16);
+            formattedDate = "$day/$month $hour:$min";
+          }
+
+          if (mounted) {
+            setState(() {
+              _lastUpdateDate = formattedDate;
+            });
+          }
+        }
+      }
+    } catch (e) {
+      debugPrint("Erreur recup date logs: $e");
+    }
   }
 
   @override
@@ -42,7 +87,6 @@ class _ComptesAppState extends State<ComptesApp> {
       home: Scaffold(
         appBar: AppBar(
           title: const Text('TransactionsApp'),
-          // Affiche la flèche retour SI on est sur le Dashboard (index 0) ET qu'une action de retour existe
           leading: (_index == 0 && _dashboardBackAction != null)
               ? IconButton(
             icon: const Icon(Icons.arrow_back),
@@ -66,47 +110,55 @@ class _ComptesAppState extends State<ComptesApp> {
             ),
           ],
         ),
-        // On écoute la notification envoyée par le DashboardScreen
+
         body: NotificationListener<DashboardBackNotification>(
           onNotification: (notification) {
-            // On met à jour l'état pour afficher/cacher la flèche retour
             setState(() {
-              if (notification.canPop) {
-                _dashboardBackAction = notification.popAction;
-              } else {
-                _dashboardBackAction = null;
-              }
+              _dashboardBackAction = notification.canPop ? notification.popAction : null;
             });
             return true;
           },
-          // J'ai remplacé IndexedStack par un switch direct.
-          // Cela permet de "tuer" le Dashboard quand on change d'onglet,
-          // et donc de revenir à la liste (reset) quand on revient dessus.
           child: _index == 0
               ? DashboardScreen(key: ValueKey('dash-$_reloadVersion'))
               : AddTransactionScreen(key: ValueKey('add-$_reloadVersion')),
         ),
-        bottomNavigationBar: NavigationBar(
-          selectedIndex: _index,
-          onDestinationSelected: (i) {
-            setState(() {
-              _index = i;
-              // Si on quitte le dashboard, on efface le bouton retour
-              if (_index != 0) {
-                _dashboardBackAction = null;
-              }
-            });
-          },
-          destinations: const [
-            NavigationDestination(
-              icon: Icon(Icons.dashboard_outlined),
-              selectedIcon: Icon(Icons.dashboard),
-              label: 'Dashboard',
-            ),
-            NavigationDestination(
-              icon: Icon(Icons.add_circle_outline),
-              selectedIcon: Icon(Icons.add_circle),
-              label: 'Transactions',
+
+        bottomNavigationBar: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.end,
+          children: [
+            // Condition ajoutée ici : _index == 0 (Dashboard uniquement)
+            if (_index == 0 && _lastUpdateDate != null)
+              Padding(
+                padding: const EdgeInsets.only(right: 16, bottom: 4),
+                child: Text(
+                  "$_lastUpdateDate",
+                  style: const TextStyle(fontSize: 10, color: Colors.grey),
+                ),
+              ),
+
+            NavigationBar(
+              selectedIndex: _index,
+              onDestinationSelected: (i) {
+                setState(() {
+                  _index = i;
+                  if (_index != 0) {
+                    _dashboardBackAction = null;
+                  }
+                });
+              },
+              destinations: const [
+                NavigationDestination(
+                  icon: Icon(Icons.dashboard_outlined),
+                  selectedIcon: Icon(Icons.dashboard),
+                  label: 'Dashboard',
+                ),
+                NavigationDestination(
+                  icon: Icon(Icons.add_circle_outline),
+                  selectedIcon: Icon(Icons.add_circle),
+                  label: 'Transactions',
+                ),
+              ],
             ),
           ],
         ),
