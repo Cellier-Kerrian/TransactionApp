@@ -17,6 +17,9 @@ class _ComptesAppState extends State<ComptesApp> {
   int _reloadVersion = 0;
   late final VoidCallback _onReload;
 
+  // Variable pour stocker l'action de retour du Dashboard
+  VoidCallback? _dashboardBackAction;
+
   @override
   void initState() {
     super.initState();
@@ -39,6 +42,13 @@ class _ComptesAppState extends State<ComptesApp> {
       home: Scaffold(
         appBar: AppBar(
           title: const Text('TransactionsApp'),
+          // Affiche la flèche retour SI on est sur le Dashboard (index 0) ET qu'une action de retour existe
+          leading: (_index == 0 && _dashboardBackAction != null)
+              ? IconButton(
+            icon: const Icon(Icons.arrow_back),
+            onPressed: _dashboardBackAction,
+          )
+              : null,
           actions: [
             IconButton(
               tooltip: 'Infos GitHub',
@@ -48,23 +58,45 @@ class _ComptesAppState extends State<ComptesApp> {
                 final res = await showGithubInfoDialog(ctx);
                 if (res != null) {
                   ScaffoldMessenger.of(ctx).showSnackBar(
-                    SnackBar(content: Text(res.message), backgroundColor: res.color),
+                    SnackBar(
+                        content: Text(res.message), backgroundColor: res.color),
                   );
                 }
               },
             ),
           ],
         ),
-        body: IndexedStack(
-          index: _index,
-          children: [
-            DashboardScreen(key: ValueKey('dash-$_reloadVersion')),
-            AddTransactionScreen(key: ValueKey('add-$_reloadVersion')),
-          ],
+        // On écoute la notification envoyée par le DashboardScreen
+        body: NotificationListener<DashboardBackNotification>(
+          onNotification: (notification) {
+            // On met à jour l'état pour afficher/cacher la flèche retour
+            setState(() {
+              if (notification.canPop) {
+                _dashboardBackAction = notification.popAction;
+              } else {
+                _dashboardBackAction = null;
+              }
+            });
+            return true;
+          },
+          // J'ai remplacé IndexedStack par un switch direct.
+          // Cela permet de "tuer" le Dashboard quand on change d'onglet,
+          // et donc de revenir à la liste (reset) quand on revient dessus.
+          child: _index == 0
+              ? DashboardScreen(key: ValueKey('dash-$_reloadVersion'))
+              : AddTransactionScreen(key: ValueKey('add-$_reloadVersion')),
         ),
         bottomNavigationBar: NavigationBar(
           selectedIndex: _index,
-          onDestinationSelected: (i) => setState(() => _index = i),
+          onDestinationSelected: (i) {
+            setState(() {
+              _index = i;
+              // Si on quitte le dashboard, on efface le bouton retour
+              if (_index != 0) {
+                _dashboardBackAction = null;
+              }
+            });
+          },
           destinations: const [
             NavigationDestination(
               icon: Icon(Icons.dashboard_outlined),

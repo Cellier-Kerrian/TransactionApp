@@ -1,47 +1,40 @@
 import 'package:flutter/material.dart';
 
+// Modifie ta classe pour accepter une fonction onBack
 class AppTopBar extends StatelessWidget implements PreferredSizeWidget {
-  final String title;
-  final VoidCallback onInfo;
+  // ... tes autres champs existants
+  final VoidCallback? onBack; // <-- Ajoute ceci
 
   const AppTopBar({
     super.key,
-    required this.title,
-    required this.onInfo,
+    // ... tes autres paramètres
+    this.onBack, // <-- Ajoute ceci au constructeur
   });
 
   @override
-  Size get preferredSize => const Size.fromHeight(kToolbarHeight);
-
-  @override
   Widget build(BuildContext context) {
-    return Material(
-      elevation: 0,
-      color: Theme.of(context).colorScheme.surface,
-      child: SafeArea(
-        bottom: false,
-        child: Container(
-          height: kToolbarHeight,
-          padding: const EdgeInsets.symmetric(horizontal: 12),
-          alignment: Alignment.centerLeft,
-          child: Row(
-            children: [
-              Text(
-                title,
-                style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                  fontWeight: FontWeight.w600,
-                ),
-              ),
-              const Spacer(),
-              IconButton(
-                tooltip: 'Infos GitHub',
-                icon: const Icon(Icons.info_outline),
-                onPressed: onInfo,
-              ),
-            ],
-          ),
+    return AppBar(
+      // Si onBack existe, on affiche la flèche retour, sinon null (ou ton logo/menu par défaut)
+      leading: onBack != null
+          ? IconButton(
+        icon: const Icon(Icons.arrow_back),
+        onPressed: onBack,
+      )
+          : null, // ou ton leading habituel
+
+      title: const Text("Transaction App"), // Ton titre habituel
+      actions: [
+        // ... tes boutons paramètres existants
+        IconButton(
+          icon: const Icon(Icons.settings),
+          onPressed: () {
+            // ... ta logique settings
+          },
         ),
-      ),
+      ],
     );
   }
+
+  @override
+  Size get preferredSize => const Size.fromHeight(kToolbarHeight);
 }
