@@ -67,6 +67,15 @@ class DashboardFullData {
   });
 }
 
+// Helper pour stocker le résultat du calcul
+class ProjectionResult {
+  final double tReste;
+  final double rReste;
+  final Map<String, EnvelopeData> envelopes;
+
+  ProjectionResult(this.tReste, this.rReste, this.envelopes);
+}
+
 // ─── 2. WRAPPER PRINCIPAL (NAVIGATEUR) ───────────────────────────────────────
 
 class DashboardScreen extends StatefulWidget {
@@ -180,13 +189,13 @@ class _DashboardListState extends State<_DashboardList> {
       _githubService.fetchFile(GithubPath(
         owner: UserConfig.GITHUB_OWNER,
         repo: UserConfig.GITHUB_REPO,
-        branch: 'main',
+        branch: UserConfig.GITHUB_BRANCH,
         path: UserConfig.LOGS_PATH,
       )),
       _githubService.fetchFile(GithubPath(
         owner: UserConfig.GITHUB_OWNER,
         repo: UserConfig.GITHUB_REPO,
-        branch: 'main',
+        branch: UserConfig.GITHUB_BRANCH,
         path: UserConfig.CSV_PATH,
       )),
     ]);
@@ -342,7 +351,7 @@ class _AccountCard extends StatelessWidget {
   }
 }
 
-// ─── 4. ECRAN DETAIL (AVEC LOGIQUE CORRIGÉE) ─────────────────────────────────
+// ─── 4. ECRAN DETAIL (AVEC PROJECTION ENVELOPPES) ────────────────────────────
 
 class _AccountDetailsScreen extends StatefulWidget {
   final Compte compte;
@@ -400,40 +409,78 @@ class _AccountDetailsScreenState extends State<_AccountDetailsScreen> {
     }
   }
 
-  /// Calcul des soldes selon la nouvelle logique
-  Map<String, double> _calculateBalances(LogEntry? log, List<TransactionLite> transactions) {
+  /// Calcul des projections (Globales + Enveloppes)
+  ProjectionResult _calculateProjection(LogEntry? log, List<TransactionLite> transactions) {
+    // 1. Init avec valeurs actuelles (Excel)
     double tReste = log?.tReste ?? 0.0;
     double rReste = log?.rReste ?? 0.0;
 
-    if (!_showProjected) {
-      return {'tReste': tReste, 'rReste': rReste};
+    // Copie propre des enveloppes
+    final Map<String, EnvelopeData> projEnvelopes = {};
+    if (log != null) {
+      log.envelopes.forEach((key, val) {
+        projEnvelopes[key] = EnvelopeData(balance: val.balance, maxLimit: val.maxLimit);
+      });
     }
 
+    if (!_showProjected) {
+      return ProjectionResult(tReste, rReste, projEnvelopes);
+    }
+
+    // 2. Création d'une map de correspondance [CleTransaction -> NomEnveloppe]
+    // pour savoir rapidement quelle enveloppe impacter
+    final typeToEnvMap = <String, String>{};
+    for (var t in widget.compte.types) {
+      if (t.envelopeConfig != null) {
+        typeToEnvMap[t.cle] = t.envelopeConfig!.nom;
+      }
+    }
+
+    // 3. Application des transactions en attente
     for (var t in transactions) {
+      // Ignorer si c'est une prévision déjà gérée par Excel (Cell != None)
+      bool hasCell = t.cellPrevisionnel != 'None' && t.cellPrevisionnel.trim().isNotEmpty;
+      if (t.previsionnel && hasCell) {
+        continue;
+      }
+
+      // Signe
       double montant = t.montant;
-      // Gestion du signe (Entrée/Sortie)
       if (t.cleNom.startsWith('out_')) {
         montant = -montant;
+      } else if (t.cleNom.startsWith('in_')) {
+        montant = montant;
       }
-      // Note : On considère que tout ce qui n'est pas 'out_' est une entrée (positif)
 
-      // 1. Solde RÉEL (Projeté)
-      // N'inclut QUE les transactions qui NE SONT PAS prévisionnelles (donc effectuées)
-      // Si c'est une prévision (futur), le solde réel (banque) ne bouge pas.
+      // A. Projection Globale
       if (!t.previsionnel) {
-        rReste += montant;
+        rReste += montant; // Impacte le Réel si transaction passée
+      }
+      if (!hasCell) {
+        tReste += montant; // Impacte le Théorique si Excel ne connait pas
       }
 
-      // 2. Solde THÉORIQUE (Projeté)
-      // Inclut TOUTES les transactions qui ne sont pas déjà connues d'Excel (Cell == None)
-      // Que ce soit prévisionnel ou réel, si Excel ne l'a pas, il faut l'ajouter au théorique.
-      bool hasCell = t.cellPrevisionnel != 'None' && t.cellPrevisionnel.trim().isNotEmpty;
+      // B. Projection Enveloppe
+      // On applique la logique "Théorique" aux enveloppes pour voir ce qu'il restera
+      // (On prend tout ce qui n'est pas déjà dans Excel)
       if (!hasCell) {
-        tReste += montant;
+        final envName = typeToEnvMap[t.cleNom];
+        if (envName != null) {
+          if (projEnvelopes.containsKey(envName)) {
+            final current = projEnvelopes[envName]!;
+            projEnvelopes[envName] = EnvelopeData(
+                balance: current.balance + montant,
+                maxLimit: current.maxLimit
+            );
+          } else {
+            // Cas rare : Enveloppe configurée mais vide/absente du log Excel
+            projEnvelopes[envName] = EnvelopeData(balance: montant, maxLimit: null);
+          }
+        }
       }
     }
 
-    return {'tReste': tReste, 'rReste': rReste};
+    return ProjectionResult(tReste, rReste, projEnvelopes);
   }
 
   @override
@@ -441,14 +488,15 @@ class _AccountDetailsScreenState extends State<_AccountDetailsScreen> {
     final hasMultipleSheets = widget.compte.feuilles.length > 1;
     final currentLog = _getLogForSelection();
 
-    final envelopes = Map<String, EnvelopeData>.from(currentLog?.envelopes ?? {});
-    final ecartData = envelopes.remove("Ecart");
-
     final sheetTransactions = widget.allTransactions
         .where((t) => t.feuille.trim() == _selectedFeuille.trim())
         .toList();
 
-    final balances = _calculateBalances(currentLog, sheetTransactions);
+    // Calcul de la projection (qui retourne un objet ProjectionResult)
+    final projection = _calculateProjection(currentLog, sheetTransactions);
+
+    final envelopes = projection.envelopes;
+    final ecartData = envelopes.remove("Ecart");
 
     return Scaffold(
       primary: false,
@@ -462,7 +510,6 @@ class _AccountDetailsScreenState extends State<_AccountDetailsScreen> {
               Row(
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
-                  // Nom du Compte
                   Flexible(
                     child: Text(
                       widget.compte.nom,
@@ -471,10 +518,8 @@ class _AccountDetailsScreenState extends State<_AccountDetailsScreen> {
                     ),
                   ),
 
-                  // Contrôles
                   Row(
                     children: [
-                      // Selecteur de feuille (si multiple) - GAUCHE
                       if (hasMultipleSheets) ...[
                         Container(
                           padding: const EdgeInsets.symmetric(horizontal: 12),
@@ -504,7 +549,6 @@ class _AccountDetailsScreenState extends State<_AccountDetailsScreen> {
                         const SizedBox(width: 12),
                       ],
 
-                      // Bouton Style Transactions - DROITE
                       GestureDetector(
                         onTap: () => setState(() => _showProjected = !_showProjected),
                         behavior: HitTestBehavior.opaque,
@@ -546,19 +590,18 @@ class _AccountDetailsScreenState extends State<_AccountDetailsScreen> {
 
                         _DetailRow(
                             label: _showProjected ? "Solde Théorique (Projeté)" : "Solde Théorique",
-                            amount: balances['tReste']!,
+                            amount: projection.tReste,
                             color: Colors.grey
                         ),
                         const SizedBox(height: 24),
                         _DetailRow(
                             label: _showProjected ? "Solde Réel (Projeté)" : "Solde Réel",
-                            amount: balances['rReste']!,
+                            amount: projection.rReste,
                             isBold: true
                         ),
 
                         const SizedBox(height: 40),
 
-                        // Enveloppes
                         if (envelopes.isNotEmpty || ecartData != null) ...[
                           Align(
                             alignment: Alignment.centerLeft,
@@ -597,7 +640,6 @@ class _AccountDetailsScreenState extends State<_AccountDetailsScreen> {
                           const SizedBox(height: 40),
                         ],
 
-                        // Transactions
                         Align(
                           alignment: Alignment.centerLeft,
                           child: Text(
@@ -623,7 +665,7 @@ class _AccountDetailsScreenState extends State<_AccountDetailsScreen> {
                               columns: [
                                 const DataColumn(label: Text('Date')),
                                 if (hasMultipleSheets) const DataColumn(label: Text('Mois')),
-                                const DataColumn(label: Text('Type de transaction')), // Corrigé
+                                const DataColumn(label: Text('Type de transaction')),
                                 const DataColumn(label: Text('Nom')),
                                 const DataColumn(label: Text('Montant')),
                                 const DataColumn(label: Text('Prév.')),
@@ -632,7 +674,7 @@ class _AccountDetailsScreenState extends State<_AccountDetailsScreen> {
                                 return DataRow(cells: [
                                   DataCell(Text(t.annee)),
                                   if (hasMultipleSheets) DataCell(Text(t.feuille)),
-                                  DataCell(Text(_getTransactionName(t.cleNom))), // Corrigé
+                                  DataCell(Text(_getTransactionName(t.cleNom))),
                                   DataCell(Text(t.nom)),
                                   DataCell(Text("${t.montant.toStringAsFixed(2)} €")),
                                   DataCell(
@@ -660,6 +702,7 @@ class _AccountDetailsScreenState extends State<_AccountDetailsScreen> {
   }
 }
 
+// ... Reste du code (Widgets _DetailRow, _EnvelopeCard, _RingPainter) inchangé ...
 class _DetailRow extends StatelessWidget {
   final String label;
   final double amount;

@@ -48,15 +48,41 @@ class Compte {
 class TypeTransaction {
   final String cle;
   final String nom;
+  final EnvelopeConfig? envelopeConfig; // Nouveau champ optionnel
 
-  TypeTransaction({required this.cle, required this.nom});
+  TypeTransaction({required this.cle, required this.nom, this.envelopeConfig});
 
-  factory TypeTransaction.fromJson(Map<String, dynamic> json) =>
-      TypeTransaction(cle: json['cle'] as String, nom: json['nom'] as String);
+  factory TypeTransaction.fromJson(Map<String, dynamic> json) {
+    return TypeTransaction(
+      cle: json['cle'] as String,
+      nom: json['nom'] as String,
+      // On parse l'objet 'enveloppe' s'il existe
+      envelopeConfig: json['enveloppe'] != null
+          ? EnvelopeConfig.fromJson(json['enveloppe'])
+          : null,
+    );
+  }
+}
+
+// Nouvelle classe pour stocker la config de l'enveloppe liée
+class EnvelopeConfig {
+  final String nom;
+  final String? celluleMax;
+  final String? celluleReste;
+
+  EnvelopeConfig({required this.nom, this.celluleMax, this.celluleReste});
+
+  factory EnvelopeConfig.fromJson(Map<String, dynamic> json) {
+    return EnvelopeConfig(
+      nom: json['nom'] as String,
+      celluleMax: json['cellule_max'] as String?,
+      celluleReste: json['cellule_reste'] as String?,
+    );
+  }
 }
 
 class CsvDefaults {
-  final String cellPrevisionnel; // "None" par défaut
+  final String cellPrevisionnel;
 
   CsvDefaults({required this.cellPrevisionnel});
 
